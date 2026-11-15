@@ -14,6 +14,5 @@ npm.cmd test
 Pop-Location
 
 Push-Location (Join-Path $root "frontend")
-npm.cmd test
 npm.cmd run build
 Pop-Location

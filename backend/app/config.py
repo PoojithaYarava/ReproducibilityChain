@@ -13,6 +13,10 @@ STORAGE_ROOT = (
 DATABASE_URL = os.getenv(
     "DATABASE_URL", f"sqlite:///{PROJECT_ROOT / 'reproducibility_chain.db'}"
 )
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL.removeprefix("postgres://")
+elif DATABASE_URL.startswith("postgresql://"):
+    DATABASE_URL = "postgresql+psycopg://" + DATABASE_URL.removeprefix("postgresql://")
 JWT_SECRET = os.getenv("JWT_SECRET") or secrets.token_urlsafe(48)
 if os.getenv("APP_ENV") == "production" and not os.getenv("JWT_SECRET"):
     raise RuntimeError("JWT_SECRET must be set in production")

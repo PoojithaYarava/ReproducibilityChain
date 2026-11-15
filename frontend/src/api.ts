@@ -9,6 +9,20 @@ export class ApiError extends Error {
   }
 }
 
+async function request(input: RequestInfo | URL, init?: RequestInit) {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new ApiError(
+        "The workspace service is unavailable. Check your connection and try again.",
+        0,
+      );
+    }
+    throw error;
+  }
+}
+
 export async function api<T>(
   path: string,
   token?: string,
@@ -21,7 +35,7 @@ export async function api<T>(
   }
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await request(`${API_BASE}${path}`, {
     ...init,
     headers,
   });
@@ -41,7 +55,7 @@ export async function download(
   path: string,
   token: string,
 ): Promise<{ blob: Blob; fileName: string }> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await request(`${API_BASE}${path}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!response.ok) {

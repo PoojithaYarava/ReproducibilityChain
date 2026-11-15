@@ -1,16 +1,16 @@
 # ReproducibilityChain
 
-A local research prototype for recording, anchoring, and checking evidence for
-controlled machine-learning experiments. It trains a built-in scikit-learn
-classifier, stores generated files off-chain, hashes a canonical manifest with
-SHA-256, and can write that commitment to a local Hardhat EVM.
+ReproducibilityChain is a research evidence workspace for controlled
+machine-learning experiments. It records model configuration, environment,
+metrics, and generated artifacts; creates canonical SHA-256 manifests; and can
+verify those files or anchor a manifest to a configured EVM registry.
 
-> **Prototype boundary:** the local blockchain transaction is real only when a
-> Hardhat node is running, a contract is deployed, and the backend confirms a
-> mined receipt and matching contract read-back. The app does not claim public
-> blockchain attestation or scientific validity.
+> **Evidence boundary:** anchoring is available only after the API is configured
+> with an RPC endpoint, deployed registry, and backend-only signer. Hash
+> agreement confirms byte integrity against a recorded manifest; it does not
+> establish scientific validity.
 
-## What works in this implementation
+## Platform capabilities
 
 - Researcher registration/login with salted PBKDF2 password hashes and
   bearer-token protected endpoints. A bootstrap token is required to create
@@ -32,6 +32,10 @@ SHA-256, and can write that commitment to a local Hardhat EVM.
 - React UI for registration/login, dashboard, experiment execution and detail,
   chain registration, verification, reproductions, score reports, and admin
   views.
+- Versioned experiment setup with model hyperparameters, random seeds, source
+  repository references, and visibility controls.
+- Searchable experiment archive, per-artifact downloads, configurable rerun
+  tolerances, and live API/registry status indicators.
 
 ## Layout
 
@@ -133,7 +137,7 @@ Vite's fallback port 5174 when 5173 is already in use.
    supported model types.
 3. Wait for the persisted experiment status to become `completed`. Review the
    metrics and artifact hashes.
-4. Choose **Anchor manifest on local chain**. The API returns success only
+4. Choose **Anchor manifest to registry**. The API returns success only
    after a mined transaction and matching registry read-back.
 5. Choose **Verify artifacts + chain**. The result reports file checks and the
    on-chain comparison separately.
@@ -206,4 +210,5 @@ methodological or scientific validity.
 
 See [docs/architecture.md](docs/architecture.md),
 [docs/api.md](docs/api.md), [docs/academic-overview.md](docs/academic-overview.md),
-and [docs/testing.md](docs/testing.md).
+and [docs/testing.md](docs/testing.md). For a hosted deployment, see
+[docs/deployment.md](docs/deployment.md).

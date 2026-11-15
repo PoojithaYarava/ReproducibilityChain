@@ -52,8 +52,8 @@ logger = logging.getLogger("reproducibility_chain")
 app = FastAPI(
     title="ReproducibilityChain API",
     description=(
-        "Local prototype API for experiment training, cryptographic evidence, "
-        "confirmed blockchain anchoring, and reproduction."
+        "API for controlled experiment runs, cryptographic evidence, "
+        "confirmed registry anchoring, and reproducibility analysis."
     ),
     version="0.2.0",
 )

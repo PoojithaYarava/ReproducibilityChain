@@ -7,7 +7,7 @@ import {
   useMemo,
   useState,
 } from "react";
-import { api, download } from "./api";
+import { ApiError, api, download } from "./api";
 
 const ScoreChart = lazy(() => import("./ScoreChart"));
 
@@ -102,6 +102,13 @@ type Verification = {
   blockchain: Record<string, unknown>;
 };
 type Page = "dashboard" | "experiments" | "new" | "admin";
+type Hyperparameters = {
+  C: string;
+  max_iter: string;
+  n_estimators: string;
+  max_depth: string;
+  min_samples_split: string;
+};
 
 const navigation: { id: Page; label: string }[] = [
   { id: "dashboard", label: "Overview" },
@@ -135,6 +142,7 @@ function App() {
   const [experiments, setExperiments] = useState<Experiment[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [chainStatus, setChainStatus] = useState<ChainStatus | null>(null);
+  const [apiOnline, setApiOnline] = useState<boolean | null>(null);
   const [selectedId, setSelectedId] = useState("");
   const [reproductionId, setReproductionId] = useState("");
   const [verification, setVerification] = useState<Verification | null>(null);
@@ -152,26 +160,58 @@ function App() {
   const [modelName, setModelName] = useState("logistic_regression");
   const [seed, setSeed] = useState(42);
   const [visibility, setVisibility] = useState("private");
+  const [experimentVersion, setExperimentVersion] = useState(1);
+  const [reproductionTolerance, setReproductionTolerance] = useState("0.02");
+  const [sourceRepository, setSourceRepository] = useState("");
+  const [gitCommit, setGitCommit] = useState("");
+  const [hyperparameters, setHyperparameters] = useState<Hyperparameters>({
+    C: "1",
+    max_iter: "1000",
+    n_estimators: "100",
+    max_depth: "",
+    min_samples_split: "2",
+  });
+  const [experimentSearch, setExperimentSearch] = useState("");
+  const [experimentStatus, setExperimentStatus] = useState("all");
 
   const selected = useMemo(
     () => experiments.find((item) => item.id === selectedId),
     [experiments, selectedId],
   );
+  const filteredExperiments = useMemo(() => {
+    const query = experimentSearch.trim().toLowerCase();
+    return experiments.filter((experiment) => {
+      const matchesQuery = !query || [
+        experiment.name,
+        experiment.description,
+        experiment.id,
+        experiment.configuration?.model_name,
+      ].some((value) => value?.toLowerCase().includes(query));
+      return matchesQuery && (experimentStatus === "all" || experiment.status === experimentStatus);
+    });
+  }, [experimentSearch, experimentStatus, experiments]);
 
   const refresh = useCallback(async () => {
     if (!token) return;
-    const [me, all, summary, chain] = await Promise.all([
-      api<User>("/api/auth/me", token),
-      api<Experiment[]>("/api/experiments", token),
-      api<Dashboard>("/api/dashboard", token),
-      api<ChainStatus>("/api/blockchain/status", token),
-    ]);
-    setUser(me);
-    setExperiments(all);
-    setDashboard(summary);
-    setChainStatus(chain);
-    if (selectedId && !all.some((item) => item.id === selectedId)) {
-      setSelectedId("");
+    try {
+      const [health, me, all, summary, chain] = await Promise.all([
+        api<{ status: string }>("/api/health"),
+        api<User>("/api/auth/me", token),
+        api<Experiment[]>("/api/experiments", token),
+        api<Dashboard>("/api/dashboard", token),
+        api<ChainStatus>("/api/blockchain/status", token),
+      ]);
+      setApiOnline(health.status === "ok");
+      setUser(me);
+      setExperiments(all);
+      setDashboard(summary);
+      setChainStatus(chain);
+      if (selectedId && !all.some((item) => item.id === selectedId)) {
+        setSelectedId("");
+      }
+    } catch (reason) {
+      setApiOnline(false);
+      throw reason;
     }
   }, [selectedId, token]);
 
@@ -184,8 +224,10 @@ function App() {
         if (active) setError("");
       } catch (reason) {
         if (active) {
-          setToken("");
-          localStorage.removeItem("rc-token");
+          if (reason instanceof ApiError && reason.status === 401) {
+            setToken("");
+            localStorage.removeItem("rc-token");
+          }
           setError(reason instanceof Error ? reason.message : "Could not load data");
         }
       }
@@ -211,6 +253,7 @@ function App() {
           setReproduction(result);
           if (result.status === "completed" || result.status === "failed") {
             await refresh();
+              if (active) setReproductionId("");
           }
         }
       } catch (reason) {
@@ -272,14 +315,20 @@ function App() {
             name: experimentName,
             description: experimentDescription,
             model_name: modelName,
+            hyperparameters: getModelHyperparameters(modelName, hyperparameters),
             random_seed: seed,
+            version: experimentVersion,
             visibility,
+            source_repository: sourceRepository || null,
+            git_commit: gitCommit || null,
           }),
         },
       );
       setSelectedId(result.experiment_id);
       setExperimentName("");
       setExperimentDescription("");
+      setSourceRepository("");
+      setGitCommit("");
       setPage("experiments");
       setNotice("Training job queued. The experiment status will refresh automatically.");
       await refresh();
@@ -292,6 +341,7 @@ function App() {
 
   async function runExperimentAction(
     action: "register-on-chain" | "verify" | "reproductions",
+    tolerance = Number(reproductionTolerance),
   ) {
     if (!token || !selected) return;
     setBusy(true);
@@ -299,6 +349,7 @@ function App() {
     setNotice("");
     setVerification(null);
     setReproduction(null);
+    setReproductionId("");
     try {
       if (action === "verify") {
         const result = await api<Verification>(
@@ -312,7 +363,18 @@ function App() {
         const result = await api<{ reproduction_id: string; status: string }>(
           `/api/experiments/${selected.id}/reproductions`,
           token,
-          { method: "POST", body: JSON.stringify({}) },
+          {
+            method: "POST",
+            body: JSON.stringify({
+              tolerances: {
+                accuracy: tolerance,
+                precision: tolerance,
+                recall: tolerance,
+                f1: tolerance,
+                roc_auc: tolerance,
+              },
+            }),
+          },
         );
         setReproductionId(result.reproduction_id);
         setNotice("Independent reproduction queued using the recorded configuration.");
@@ -355,6 +417,25 @@ function App() {
     }
   }
 
+  async function downloadArtifact(artifactId: string, fileName: string) {
+    if (!token) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await download(`/api/artifacts/${artifactId}/download`, token);
+      const url = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = result.fileName || fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Artifact download failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function showAdmin() {
     if (!token) return;
     setPage("admin");
@@ -386,14 +467,36 @@ function App() {
   if (!token) {
     return (
       <main className="auth-page">
+        <section className="auth-aside" aria-label="Platform overview">
+          <a className="brand auth-brand" href="#">
+            <span className="brand-mark">RC</span>
+            <span>ReproducibilityChain</span>
+          </a>
+          <div className="auth-pitch">
+            <p className="eyebrow">RESEARCH OPERATIONS</p>
+            <h2>Keep every experiment traceable.</h2>
+            <p className="muted">
+              Bring model runs, evidence files, verification, and reproducibility
+              reports together in one secure workspace.
+            </p>
+            <ul className="auth-benefits">
+              <li><span>01</span><div><strong>Capture evidence</strong><small>Record configurations, metrics, and artifacts for every run.</small></div></li>
+              <li><span>02</span><div><strong>Verify integrity</strong><small>Compare artifact hashes and registry commitments.</small></div></li>
+              <li><span>03</span><div><strong>Reproduce with context</strong><small>Review rerun metrics and transparent score details.</small></div></li>
+            </ul>
+          </div>
+          <p className="auth-legal">Built for clear, reviewable research workflows.</p>
+        </section>
         <section className="auth-panel">
-          <div className="brand-mark">RC</div>
-          <p className="eyebrow">Research evidence platform</p>
-          <h1>ReproducibilityChain</h1>
-          <p className="muted">
-            Manage experiments, preserve reproducibility evidence, and verify
-            research records from one workspace.
-          </p>
+          <div className="auth-heading">
+            <p className="eyebrow">SECURE WORKSPACE ACCESS</p>
+            <h1>{authMode === "login" ? "Welcome back" : "Create your account"}</h1>
+            <p className="muted">
+              {authMode === "login"
+                ? "Sign in to continue to your research workspace."
+                : "Create an account to start managing your experiments."}
+            </p>
+          </div>
           <form onSubmit={submitAuth} className="form-stack">
             <label>
               Email
@@ -406,15 +509,18 @@ function App() {
               />
             </label>
             {authMode === "register" && (
-              <label>
-                Administrator bootstrap token <span className="muted">(optional)</span>
-                <input
-                  type="password"
-                  autoComplete="off"
-                  value={bootstrapToken}
-                  onChange={(event) => setBootstrapToken(event.target.value)}
-                />
-              </label>
+              <details className="optional-access">
+                <summary>Have an administrator setup token?</summary>
+                <label>
+                  Administrator setup token <span className="muted">(optional)</span>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    value={bootstrapToken}
+                    onChange={(event) => setBootstrapToken(event.target.value)}
+                  />
+                </label>
+              </details>
             )}
             <label>
               Password <span className="muted">(minimum 10 characters)</span>
@@ -444,10 +550,7 @@ function App() {
               ? "New researcher? Create an account"
               : "Already registered? Sign in"}
           </button>
-          <p className="fine-print">
-            Passwords are hashed server-side. The browser never receives the chain
-            signing key.
-          </p>
+          <p className="fine-print">Your password is protected with a salted server-side hash.</p>
         </section>
       </main>
     );
@@ -456,7 +559,7 @@ function App() {
   return (
     <div className="app-shell">
       <aside className="sidebar">
-        <a className="brand" href="#" onClick={() => setPage("dashboard")}>
+        <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setPage("dashboard"); }}>
           <span className="brand-mark small-mark">RC</span>
           <span>ReproducibilityChain</span>
         </a>
@@ -483,8 +586,8 @@ function App() {
           )}
         </nav>
         <div className="sidebar-bottom">
-          <span className="status-dot" />
-          API workspace
+          <span className={`status-dot ${apiOnline === false ? "offline-dot" : apiOnline === null ? "checking-dot" : ""}`} />
+          <span>{apiOnline === false ? "API unavailable" : apiOnline === null ? "Checking API" : "API connected"}</span>
           <button className="nav-item signout" onClick={signOut}>
             Sign out
           </button>
@@ -494,7 +597,7 @@ function App() {
       <main className="main-panel">
         <header className="topbar">
           <div>
-            <p className="eyebrow">LOCAL RESEARCH WORKSPACE</p>
+            <p className="eyebrow">RESEARCH WORKSPACE</p>
             <p className="muted small">
               {user?.email} · {user?.role}
             </p>
@@ -503,10 +606,10 @@ function App() {
             <span className="chain-badge">
               <span className={`status-dot ${chainStatus?.contract_deployed ? "" : "offline-dot"}`} />
                 {chainStatus?.contract_deployed
-                  ? `Local chain ready · ${chainStatus.chain_id}`
+                  ? `Registry active · ${chainStatus.chain_id}`
                   : chainStatus?.connected
-                    ? `RPC online · expected ${chainStatus.expected_chain_id}, registry missing`
-                    : `Local chain offline · expected ${chainStatus?.expected_chain_id ?? 31337}`}
+                    ? "RPC online · registry unavailable"
+                    : "Registry unavailable"}
             </span>
             <button className="button primary" onClick={() => setPage("new")}>
               + New experiment
@@ -535,7 +638,7 @@ function App() {
                   <p className="eyebrow">OVERVIEW</p>
                   <h1>Research dashboard</h1>
                   <p className="muted">
-                    Live counts from your account and the local API database.
+                    A live view of experiment activity and evidence status.
                   </p>
                 </div>
                 <button className="button secondary" onClick={() => void refresh()}>
@@ -552,8 +655,8 @@ function App() {
                 <section className="panel chart-panel">
                   <div className="panel-heading">
                     <div>
-                      <h2>Reproducibility scores</h2>
-                      <p className="muted small">Proposed project score · maximum 100</p>
+                      <h2>Reproduction scores</h2>
+                      <p className="muted small">Evidence and metric comparison · out of 100</p>
                     </div>
                   </div>
                   {dashboard?.score_distribution.length ? (
@@ -568,15 +671,15 @@ function App() {
                     </div>
                   )}
                   <p className="fine-print">
-                    This proposed score is not a scientifically validated
-                    universal metric.
+                    Scores summarize recorded evidence checks; they are not a
+                    substitute for scientific review.
                   </p>
                 </section>
                 <section className="panel">
                   <div className="panel-heading">
                     <div>
-                      <h2>Recent chain transactions</h2>
-                      <p className="muted small">Confirmed local development-chain writes</p>
+                      <h2>Registry activity</h2>
+                      <p className="muted small">Confirmed transactions on the configured network</p>
                     </div>
                   </div>
                   {dashboard?.recent_transactions.length ? (
@@ -596,7 +699,7 @@ function App() {
                     <div className="empty-state compact">
                       <p>No confirmed transactions yet.</p>
                       <p className="muted small">
-                        Start Hardhat and deploy the registry before registering.
+                        Connect an RPC endpoint and deploy the registry contract to enable anchoring.
                       </p>
                     </div>
                   )}
@@ -628,10 +731,10 @@ function App() {
               <div className="page-heading">
                 <div>
                   <p className="eyebrow">CONTROLLED PIPELINE</p>
-                  <h1>Register an experiment</h1>
+                  <h1>Create experiment</h1>
                   <p className="muted">
-                    The server trains only its built-in breast-cancer classifier
-                    pipeline. Uploaded Python code is never executed.
+                    Configure a supported model run. Every completed run records
+                    its settings, environment, metrics, and evidence artifacts.
                   </p>
                 </div>
               </div>
@@ -644,10 +747,19 @@ function App() {
                   Description
                   <textarea value={experimentDescription} onChange={(event) => setExperimentDescription(event.target.value)} rows={3} maxLength={4000} />
                 </label>
+                <label>
+                  Experiment version
+                  <input type="number" min="1" step="1" required value={experimentVersion} onChange={(event) => setExperimentVersion(Number(event.target.value))} />
+                  <span className="muted">Create a new version when revising an experiment with the same name.</span>
+                </label>
                 <div className="form-row">
                   <label>
                     Model architecture
-                    <select value={modelName} onChange={(event) => setModelName(event.target.value)}>
+                    <select value={modelName} onChange={(event) => {
+                      const next = event.target.value;
+                      setModelName(next);
+                      setHyperparameters(defaultHyperparameters());
+                    }}>
                       <option value="logistic_regression">Logistic regression</option>
                       <option value="random_forest">Random forest</option>
                       <option value="decision_tree">Decision tree</option>
@@ -658,10 +770,41 @@ function App() {
                     <input type="number" min={0} max={4294967295} value={seed} onChange={(event) => setSeed(Number(event.target.value))} />
                   </label>
                 </div>
+                <fieldset className="parameter-fieldset">
+                  <legend>Model parameters</legend>
+                  {modelName === "logistic_regression" && (
+                    <div className="form-row">
+                      <label>Regularization strength (C)<input type="number" min="0.0001" step="any" required value={hyperparameters.C} onChange={(event) => setHyperparameters({ ...hyperparameters, C: event.target.value })} /></label>
+                      <label>Maximum iterations<input type="number" min="1" step="1" required value={hyperparameters.max_iter} onChange={(event) => setHyperparameters({ ...hyperparameters, max_iter: event.target.value })} /></label>
+                    </div>
+                  )}
+                  {modelName === "random_forest" && (
+                    <div className="form-row">
+                      <label>Number of trees<input type="number" min="1" step="1" required value={hyperparameters.n_estimators} onChange={(event) => setHyperparameters({ ...hyperparameters, n_estimators: event.target.value })} /></label>
+                      <label>Maximum depth <span className="muted">(leave blank for unlimited)</span><input type="number" min="1" step="1" value={hyperparameters.max_depth} onChange={(event) => setHyperparameters({ ...hyperparameters, max_depth: event.target.value })} /></label>
+                    </div>
+                  )}
+                  {modelName === "decision_tree" && (
+                    <div className="form-row">
+                      <label>Maximum depth <span className="muted">(leave blank for unlimited)</span><input type="number" min="1" step="1" value={hyperparameters.max_depth} onChange={(event) => setHyperparameters({ ...hyperparameters, max_depth: event.target.value })} /></label>
+                      <label>Minimum samples to split<input type="number" min="2" step="1" required value={hyperparameters.min_samples_split} onChange={(event) => setHyperparameters({ ...hyperparameters, min_samples_split: event.target.value })} /></label>
+                    </div>
+                  )}
+                </fieldset>
                 <div className="read-only-field">
                   <span className="muted small">Dataset</span>
                   <strong>Scikit-learn Breast Cancer Wisconsin · bundled version</strong>
                   <span className="fine-print">Data remains local. Dataset hash is included in the manifest.</span>
+                </div>
+                <div className="form-row">
+                  <label>
+                    Source repository <span className="muted">(optional)</span>
+                    <input type="url" maxLength={500} placeholder="https://github.com/lab/project" value={sourceRepository} onChange={(event) => setSourceRepository(event.target.value)} />
+                  </label>
+                  <label>
+                    Source commit <span className="muted">(optional)</span>
+                    <input type="text" minLength={7} maxLength={64} pattern="[A-Fa-f0-9]{7}|[A-Fa-f0-9]{40}|[A-Fa-f0-9]{64}" placeholder="Commit SHA" value={gitCommit} onChange={(event) => setGitCommit(event.target.value)} />
+                  </label>
                 </div>
                 <label>
                   Visibility
@@ -671,13 +814,13 @@ function App() {
                   </select>
                 </label>
                 <div className="callout info">
-                  A local Hardhat transaction is submitted separately after
-                  training. No blockchain write happens during this form.
+                  Registry anchoring is available after training when a network
+                  and contract are configured. Training does not initiate a chain transaction.
                 </div>
                 <div className="form-actions">
                   <button type="button" className="button secondary" onClick={() => setPage("dashboard")}>Cancel</button>
                   <button className="button primary" disabled={busy}>
-                    {busy ? "Starting…" : "Train and generate evidence"}
+                    {busy ? "Starting…" : "Start experiment"}
                   </button>
                 </div>
               </form>
@@ -696,13 +839,31 @@ function App() {
                 </div>
               </div>
               <section className="panel">
+                <div className="experiment-filters">
+                  <label className="search-field">
+                    <span className="sr-only">Search experiments</span>
+                    <input type="search" placeholder="Search by name, model, description, or ID" value={experimentSearch} onChange={(event) => setExperimentSearch(event.target.value)} />
+                  </label>
+                  <label className="status-filter">
+                    <span className="sr-only">Filter by status</span>
+                    <select value={experimentStatus} onChange={(event) => setExperimentStatus(event.target.value)}>
+                      <option value="all">All statuses</option>
+                      <option value="queued">Queued</option>
+                      <option value="running">Running</option>
+                      <option value="completed">Completed</option>
+                      <option value="failed">Failed</option>
+                    </select>
+                  </label>
+                </div>
                 <ExperimentTable
-                  items={experiments}
+                  items={filteredExperiments}
+                  emptyMessage={experiments.length ? "No experiments match the current search and status filters." : undefined}
                   selectedId={selectedId}
                   onSelect={(id) => {
                     setSelectedId(id);
                     setVerification(null);
                     setReproduction(null);
+                    setReproductionId("");
                   }}
                 />
               </section>
@@ -714,7 +875,10 @@ function App() {
                   busy={busy}
                   onAction={runExperimentAction}
                   onDownload={() => void downloadReport()}
+                  onDownloadArtifact={(id, name) => void downloadArtifact(id, name)}
                   onRefresh={() => void refresh()}
+                  reproductionTolerance={reproductionTolerance}
+                  onToleranceChange={setReproductionTolerance}
                 />
               )}
             </>
@@ -751,8 +915,7 @@ function App() {
           )}
 
           <footer className="content-footer">
-            File integrity is not scientific validity · Local chain ID 31337 · No
-            public testnet or public chain
+            File integrity confirms recorded bytes; it does not establish scientific validity.
           </footer>
         </div>
       </main>
@@ -764,17 +927,19 @@ function ExperimentTable({
   items,
   selectedId,
   onSelect,
+  emptyMessage = "Start with your first experiment to create a searchable evidence record.",
 }: {
   items: Experiment[];
   selectedId?: string;
   onSelect: (id: string) => void;
+  emptyMessage?: string;
 }) {
   if (!items.length) {
     return (
       <div className="empty-state">
         <div className="empty-icon">◇</div>
         <h3>No experiments yet</h3>
-        <p className="muted">Train a controlled model to create an evidence manifest.</p>
+        <p className="muted">{emptyMessage}</p>
       </div>
     );
   }
@@ -789,6 +954,13 @@ function ExperimentTable({
             <tr
               key={item.id}
               className={`click-row ${selectedId === item.id ? "selected-row" : ""}`}
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelect(item.id);
+                }
+              }}
               onClick={() => onSelect(item.id)}
             >
               <td><strong>{item.name}</strong><span className="table-subtitle">v{item.version} · {item.visibility}</span></td>
@@ -811,15 +983,21 @@ function ExperimentDetails({
   busy,
   onAction,
   onDownload,
+  onDownloadArtifact,
   onRefresh,
+  reproductionTolerance,
+  onToleranceChange,
 }: {
   experiment: Experiment;
   verification: Verification | null;
   reproduction: Reproduction | null;
   busy: boolean;
-  onAction: (action: "register-on-chain" | "verify" | "reproductions") => void;
+  onAction: (action: "register-on-chain" | "verify" | "reproductions", tolerance?: number) => void;
   onDownload: () => void;
+  onDownloadArtifact: (id: string, name: string) => void;
   onRefresh: () => void;
+  reproductionTolerance: string;
+  onToleranceChange: (value: string) => void;
 }) {
   const confirmed = experiment.transactions.some((item) => item.status === "confirmed");
   return (
@@ -858,6 +1036,7 @@ function ExperimentDetails({
           <p><span className="muted">Architecture</span> {experiment.configuration?.model_name ?? "—"}</p>
           <p><span className="muted">Seed</span> {experiment.configuration?.random_seed ?? "—"}</p>
           <p><span className="muted">Parameters</span> <code>{JSON.stringify(experiment.configuration?.hyperparameters ?? {})}</code></p>
+          {experiment.source_repository && <p><span className="muted">Source repository</span> <a className="source-link" href={experiment.source_repository} target="_blank" rel="noreferrer">{experiment.source_repository}</a></p>}
           {experiment.git_commit && <p><span className="muted">Commit</span> <code>{experiment.git_commit}</code></p>}
         </div>
       </div>
@@ -873,7 +1052,10 @@ function ExperimentDetails({
               <div className="artifact-item" key={artifact.id}>
                 <span className="artifact-type">{artifact.type.replaceAll("_", " ")}</span>
                 <div><strong>{artifact.file_name}</strong><code>{artifact.sha256}</code></div>
-                <span className="muted small">{formatBytes(artifact.size_bytes)}</span>
+                <div className="artifact-actions">
+                  <span className="muted small">{formatBytes(artifact.size_bytes)}</span>
+                  <button className="text-button" onClick={() => onDownloadArtifact(artifact.id, artifact.file_name)} disabled={busy}>Download</button>
+                </div>
               </div>
             ))}
           </div>
@@ -891,25 +1073,30 @@ function ExperimentDetails({
             <code>{transaction.transaction_hash}</code>
           </div>
         ))}
+        <label className="tolerance-control">
+          Metric tolerance
+          <input type="number" min="0" max="1" step="0.001" value={reproductionTolerance} onChange={(event) => onToleranceChange(event.target.value)} />
+          <span className="muted">Maximum absolute difference, applied to all five metrics.</span>
+        </label>
         <div className="action-row action-row-wrap">
           <button
             className="button primary"
             onClick={() => onAction("register-on-chain")}
             disabled={busy || experiment.status !== "completed" || confirmed}
           >
-            {busy ? "Working…" : "Anchor manifest on local chain"}
+            {busy ? "Working…" : "Anchor manifest to registry"}
           </button>
           <button className="button secondary" onClick={() => onAction("verify")} disabled={busy || experiment.status !== "completed"}>
             Verify artifacts + chain
           </button>
-          <button className="button secondary" onClick={() => onAction("reproductions")} disabled={busy || experiment.status !== "completed"}>
+          <button className="button secondary" onClick={() => onAction("reproductions", Number(reproductionTolerance))} disabled={busy || experiment.status !== "completed"}>
             Run reproduction
           </button>
         </div>
         {!confirmed && (
           <p className="fine-print">
-            Registration requires a running local Hardhat node, deployed registry,
-            and backend-only test signer. This button reports chain errors directly.
+            Anchoring requires an available RPC endpoint, deployed registry, and
+            a backend-configured signer. This action reports network errors directly.
           </p>
         )}
       </div>
@@ -972,6 +1159,32 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function defaultHyperparameters(): Hyperparameters {
+  return {
+    C: "1",
+    max_iter: "1000",
+    n_estimators: "100",
+    max_depth: "",
+    min_samples_split: "2",
+  };
+}
+
+function getModelHyperparameters(modelName: string, values: Hyperparameters) {
+  if (modelName === "logistic_regression") {
+    return { C: Number(values.C), max_iter: Number(values.max_iter) };
+  }
+  if (modelName === "random_forest") {
+    return {
+      n_estimators: Number(values.n_estimators),
+      max_depth: values.max_depth ? Number(values.max_depth) : null,
+    };
+  }
+  return {
+    max_depth: values.max_depth ? Number(values.max_depth) : null,
+    min_samples_split: Number(values.min_samples_split),
+  };
 }
 
 export default App;

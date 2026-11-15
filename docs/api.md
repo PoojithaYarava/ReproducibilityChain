@@ -57,7 +57,7 @@ FastAPI background task; jobs are not recovered after an API-process crash.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/api/blockchain/status` | Report actual RPC connectivity and deployed contract-code status; never returns private key data. |
-| POST | `/api/experiments/{id}/register-on-chain` | Sign a local-chain transaction, await a mined receipt, then check contract read-back. |
+| POST | `/api/experiments/{id}/register-on-chain` | Sign a transaction on the configured EVM network, await a mined receipt, then check contract read-back. |
 | GET | `/api/experiments/{id}/transactions` | List actual transaction status and receipt metadata. |
 | POST | `/api/experiments/{id}/verify` | Re-hash every artifact and query both contract verification and stored record. |
 
@@ -65,8 +65,9 @@ A registration request returns a transaction hash only if a transaction was
 actually submitted. It reports `confirmed` only after a successful receipt and
 matching read-back. Transactions that were broadcast but could not be
 confirmed are recorded as `pending`; a reverted receipt is `failed`. The
-backend must be configured with a disposable local Hardhat wallet, RPC URL,
-chain ID, and deployed contract address. No simulated blockchain mode exists.
+backend must be configured with an RPC URL, chain ID, deployed contract
+address, and dedicated service wallet. For local development, use a disposable
+Hardhat account. No simulated blockchain mode exists.
 
 Canonicalization is UTF-8 JSON, sorted object keys, compact separators,
 Unicode emitted directly, and array order preserved. The manifest includes

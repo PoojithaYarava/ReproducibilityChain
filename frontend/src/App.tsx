@@ -388,16 +388,12 @@ function App() {
       <main className="auth-page">
         <section className="auth-panel">
           <div className="brand-mark">RC</div>
-          <p className="eyebrow">Research integrity workspace</p>
+          <p className="eyebrow">Research evidence platform</p>
           <h1>ReproducibilityChain</h1>
           <p className="muted">
-            Train a controlled model, record its evidence, and check a real local
-            blockchain commitment.
+            Manage experiments, preserve reproducibility evidence, and verify
+            research records from one workspace.
           </p>
-          <div className="callout warning">
-            Local prototype. A blockchain wallet and deployed contract must be
-            configured before on-chain registration.
-          </div>
           <form onSubmit={submitAuth} className="form-stack">
             <label>
               Email

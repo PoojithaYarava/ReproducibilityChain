@@ -1,0 +1,43 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# JavaScript
+node_modules/
+dist/
+coverage/
+
+# Local database and generated artifacts
+*.sqlite
+*.sqlite3
+*.db
+storage/*
+!storage/.gitkeep
+artifacts/
+models/
+datasets/
+
+# Hardhat output
+blockchain/artifacts/
+blockchain/cache/
+
+# Editors and OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Generated packaging and TypeScript build metadata
+*.egg-info/
+*.tsbuildinfo
